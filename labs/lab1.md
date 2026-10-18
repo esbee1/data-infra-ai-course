@@ -1,7 +1,18 @@
-# Lab 1 · Data lifecycle map
+# Lab 1
 
 **Name:**
 **Due:** Sunday, October 25 at 11:59 PM
+**Submit:** your repo URL in the Lab 1 assignment on CourseWorks
+
+| Part | Where | File |
+|---|---|---|
+| **In class:** first DuckDB query on the penguins data | Session 1 | `notebooks/lab1_first_query.ipynb` |
+| **At home:** your own dataset in DuckDB | Before Sunday | `notebooks/lab1_home_your_data.ipynb` |
+| **At home:** data lifecycle map | Before Sunday | This file (below) |
+
+---
+
+## Data lifecycle map
 
 Pick one data product you use regularly (a transit app, a weather forecast, a fitness tracker, Spotify Wrapped, a building permit lookup...). Sketch how its data likely moves through each stage. Educated guesses are fine; say what you'd want to find out.
 
@@ -19,9 +30,10 @@ Pick one data product you use regularly (a transit app, a weather forecast, a fi
 
 ---
 
-**Checklist before you submit**
+## Checklist before you submit
 
-- [ ] All cells in `notebooks/lab1_first_query.ipynb` ran, including your own query
-- [ ] Three observations written in the notebook
+- [ ] In-class notebook: every cell ran, including your own query and three observations
+- [ ] At-home notebook: your CSV is in `data/`, three queries run, observations and dataset card filled in
 - [ ] This lifecycle map filled in
-- [ ] Changes committed and pushed to GitHub
+- [ ] Everything committed and pushed. Check on GitHub that your CSV and both notebooks are there
+- [ ] Repo URL pasted into CourseWorks
