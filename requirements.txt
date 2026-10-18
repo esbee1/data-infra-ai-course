@@ -1,0 +1,8 @@
+# Course libraries. The Codespace installs these automatically when it is created.
+# To reinstall by hand:  pip install --user -r requirements.txt
+
+duckdb>=1.5,<2        # embedded analytical database (Sessions 1-5)
+pandas>=2.2,<4        # data cleaning and transformation (Session 2+)
+requests>=2.32,<3     # calling REST APIs (Session 3)
+ipykernel>=6.29       # runs Jupyter notebooks inside the Codespace
+streamlit>=1.40,<2    # the app interface (Session 5)

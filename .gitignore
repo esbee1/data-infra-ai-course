@@ -1,0 +1,12 @@
+# Local database files: rebuilt from code, never committed
+*.duckdb
+*.duckdb.wal
+
+# Secrets: never commit API keys or tokens
+.env
+.streamlit/secrets.toml
+
+# Python and notebook clutter
+__pycache__/
+.ipynb_checkpoints/
+.venv/

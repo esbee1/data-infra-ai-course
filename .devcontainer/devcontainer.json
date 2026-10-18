@@ -1,0 +1,34 @@
+{
+  "name": "Data Infrastructure and AI (course workspace)",
+  "image": "mcr.microsoft.com/devcontainers/python:1-3.12-bookworm",
+
+  // A 2-core machine uses free hours at the slowest rate (120 core-hours = 60 hours of use).
+  "hostRequirements": {
+    "cpus": 2
+  },
+
+  // Installs the course libraries once, when the Codespace is first created.
+  "postCreateCommand": "pip install --user -r requirements.txt",
+
+  // Port 8501 is Streamlit (Session 5).
+  "forwardPorts": [8501],
+  "portsAttributes": {
+    "8501": { "label": "Streamlit app", "onAutoForward": "openPreview" }
+  },
+
+  "customizations": {
+    "codespaces": {
+      "openFiles": ["README.md", "notebooks/lab1_first_query.ipynb"]
+    },
+    "vscode": {
+      "extensions": [
+        "ms-python.python",
+        "ms-toolsai.jupyter"
+      ],
+      "settings": {
+        "python.defaultInterpreterPath": "/usr/local/bin/python",
+        "jupyter.notebookFileRoot": "${workspaceFolder}"
+      }
+    }
+  }
+}
