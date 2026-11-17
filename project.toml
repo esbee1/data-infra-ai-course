@@ -125,3 +125,31 @@ GROUP BY incident_zip, borough
 ORDER BY complaints DESC
 LIMIT 20
 """
+
+
+# -----------------------------------------------------------------------------
+# 4. REPORT (optional): questions the pipeline answers at the end of each run
+#    Each is a plain-English question and the SQL that answers it, using the
+#    tables above. The answers print in the run log. Try your findings here!
+# -----------------------------------------------------------------------------
+[[report]]
+question = "Which borough has the most heat complaints?"
+sql = """
+SELECT borough, total_complaints, avg_per_day, pct_of_city
+FROM heat_borough_summary
+ORDER BY total_complaints DESC
+"""
+
+[[report]]
+question = "Which five ZIP codes are hardest hit?"
+sql = "SELECT incident_zip, borough, complaints FROM heat_top_zips ORDER BY complaints DESC LIMIT 5"
+
+[[report]]
+question = "How many complaints came in each day, citywide?"
+sql = """
+SELECT created_day, sum(complaints)::INT AS complaints
+FROM heat_by_borough_day
+GROUP BY created_day
+ORDER BY created_day
+"""
+

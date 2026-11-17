@@ -8,6 +8,7 @@ Every run does five steps, in order:
   2. LOAD       put the rows in a table called raw
   3. VALIDATE   run your checks; if any fail, STOP and publish nothing
   4. TRANSFORM  build the tables listed in project.toml
+                (and print answers to any [[report]] questions)
   5. PUBLISH    write them to MotherDuck
 
 How to run it (in your Codespace terminal):
@@ -207,6 +208,24 @@ def transform(con, tables):
         log("transform", f"{t['name']}: {n} rows")
 
 
+def report(con, questions):
+    """Answer the questions in [[report]], from the tables the pipeline just built."""
+    if not questions:
+        return
+    print("\n" + "=" * 70, flush=True)
+    print("  WHAT THE DATA SAYS  (the [[report]] questions in project.toml)", flush=True)
+    print("=" * 70, flush=True)
+    for q in questions:
+        print(f"\nQ: {q['question']}", flush=True)
+        try:
+            df = con.sql(q["sql"]).df().head(10)
+            with pd.option_context("display.max_columns", 10, "display.width", 120):
+                print(df.to_string(index=False), flush=True)
+        except Exception as e:
+            print(f"   (this question's SQL has an error: {e})", flush=True)
+    print("", flush=True)
+
+
 def motherduck_token():
     # GitHub stores secret names in capitals; DuckDB looks for either spelling.
     token = os.environ.get("MOTHERDUCK_TOKEN") or os.environ.get("motherduck_token")
@@ -283,6 +302,7 @@ def main():
             log("load", "BREAK_IT is on: emptied raw on purpose, to test the checks")
         validate(con, settings.get("checks", []))
         transform(con, settings.get("tables", []))
+        report(con, settings.get("report", []))
         publish(con, settings.get("tables", []), project)
     except ValidationError as e:
         log("STOPPED", f"{e}. Nothing was published; yesterday's tables are untouched.")
