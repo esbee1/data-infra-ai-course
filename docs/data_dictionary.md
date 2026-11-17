@@ -1,6 +1,6 @@
 # Data dictionary
 
-This file describes your final table. In Session 5, an AI model will read it to write SQL
+This file describes the tables your pipeline publishes. Copy the Columns section once per table. In Session 5, an AI model will read it to write SQL
 against your data, so a clear description here means better answers there. Write it for a
 smart reader who has never seen your data.
 
