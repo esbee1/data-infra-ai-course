@@ -8,7 +8,9 @@ BASE="${COURSE_BASE:-https://raw.githubusercontent.com/esbee1/data-infra-ai-cour
 
 case "$LAB" in
   2) FILES="notebooks/lab2_joins.ipynb data/species_lookup.csv labs/lab2.md" ;;
-  *) echo "Usage: ... | bash -s <lab number>   (available: 2)"; exit 1 ;;
+  3) FILES="notebooks/lab3_live_data.ipynb labs/lab3.md" ;;
+  4) FILES="pipeline.py templates/pipeline.yml>.github/workflows/pipeline.yml examples/pipeline_nyc311.py docs/data_dictionary.md labs/lab4.md notebooks/lab3_live_data.ipynb" ;;
+  *) echo "Usage: ... | bash -s <lab number>   (available: 2, 3, 4)"; exit 1 ;;
 esac
 
 if [ ! -d data ] || [ ! -d notebooks ]; then
@@ -16,13 +18,14 @@ if [ ! -d data ] || [ ! -d notebooks ]; then
   exit 1
 fi
 
-for f in $FILES; do
+for item in $FILES; do
+  src="${item%%>*}"; f="${item#*>}"     # "a>b" means: download a, save it as b
   if [ -e "$f" ]; then
     echo "  already have  $f  (left unchanged)"
   else
     mkdir -p "$(dirname "$f")"
-    curl -fsSL "$BASE/$f" -o "$f"
+    curl -fsSL "$BASE/$src" -o "$f"
     echo "  added         $f"
   fi
 done
-echo "Lab $LAB files are ready. Open notebooks/ in the file list on the left."
+echo "Lab $LAB files are ready. Find them in the file list on the left."
