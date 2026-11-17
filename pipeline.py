@@ -45,7 +45,7 @@ def get_json(url, params=None, tries=5, pause=3):
     """GET a URL and return its JSON. Retries up to 5 times if the server is slow or busy."""
     for attempt in range(1, tries + 1):
         try:
-            r = requests.get(url, params=params, timeout=(10, 90))   # 10s to connect, 90s to answer
+            r = requests.get(url, params=params, timeout=(10, 120))  # 10s to connect, 120s to answer
             if r.status_code == 429 or r.status_code >= 500:   # busy or broken: worth retrying
                 raise requests.HTTPError(f"status {r.status_code}")
             r.raise_for_status()                                # 4xx: our mistake, don't retry
@@ -88,8 +88,9 @@ def fetch_socrata(url, params=None, page_size=1000, max_pages=20):
 # Return a dict of {table_name: DataFrame}. These become your raw tables.
 # =============================================================================
 def extract():
+    # The indicator endpoint is slow per request, so ask for fewer, bigger pages
     rows, expected = fetch_world_bank(f"{WB_BASE}/country/all/indicator/{WB_INDICATOR}",
-                                      {"date": WB_YEARS})
+                                      {"date": WB_YEARS}, per_page=1000)
     if len(rows) != expected:
         log("extract", f"WARNING: got {len(rows)} rows, API says {expected}")
 
@@ -98,6 +99,13 @@ def extract():
         "date": "year", "value": "urban_pct",
     })[["country_code", "country", "year", "urban_pct"]]
     urban["year"] = urban["year"].astype(int)
+    # Decision: a few World Bank rows have no 3-letter country code (they are groupings,
+    # not countries). Our key is country_code + year, so rows without a code can't be used.
+    no_code = (urban["country_code"].isna()) | (urban["country_code"].str.strip() == "")
+    if no_code.any():
+        names = sorted(urban.loc[no_code, "country"].unique())
+        log("extract", f"dropping {no_code.sum()} rows with no country code: {names}")
+    urban = urban[~no_code]
 
     country_rows, _ = fetch_world_bank(f"{WB_BASE}/country", {})
     countries = pd.json_normalize(country_rows).rename(columns={
