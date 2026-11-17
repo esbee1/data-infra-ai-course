@@ -61,3 +61,23 @@ FROM urban_population
 WHERE urban_pct IS NOT NULL
 GROUP BY country, region
 """
+
+[[tables]]
+name = "urban_by_region"
+sql  = """
+SELECT region, year,
+       round(avg(urban_pct), 1) AS avg_urban_pct,
+       count(*)                 AS countries
+FROM urban_population
+WHERE urban_pct IS NOT NULL
+GROUP BY region, year
+"""
+
+[[tables]]
+name = "urban_fastest_growing"
+sql  = """
+SELECT country, region, pct_first, pct_latest, change
+FROM urban_change
+ORDER BY change DESC
+LIMIT 20
+"""
