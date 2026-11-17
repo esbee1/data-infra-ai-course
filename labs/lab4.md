@@ -43,7 +43,7 @@ If a token ever leaks, delete it in MotherDuck right away and make a new one (th
 
 **Checklist before you submit**
 
-- [ ] `pipeline.py` fetches **your** API (at least two pages), with at least five checks of your own and at least one transform
+- [ ] `project.toml` points to **your** API, with at least five checks of your own (each with a why) and at least one table
 - [ ] A green run and a red run on the Actions tab, both linked above
 - [ ] `docs/data_dictionary.md` filled in for your final table
 - [ ] This file answered
