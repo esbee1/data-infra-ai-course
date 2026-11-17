@@ -1,40 +1,37 @@
 """
-pipeline.py · Labs 3 + 4
-A scheduled data pipeline: EXTRACT -> LOAD -> VALIDATE -> TRANSFORM -> PUBLISH.
+pipeline.py · Labs 3 + 4 · the pipeline "engine"
 
-Run it by hand in your Codespace terminal:
-    python pipeline.py
-GitHub Actions runs the same file every day (see .github/workflows/pipeline.yml).
+YOU DON'T NEED TO EDIT THIS FILE. Your project lives in project.toml.
 
-It ships with a working example: NYC 311 heat and hot water complaints, from NYC Open Data.
-To make it yours, edit only the four blocks marked  ### YOUR PROJECT ###  below.
-A second finished example, using the World Bank API, is in examples/pipeline_worldbank.py.
+Every run does five steps, in order:
+  1. EXTRACT    fetch every page from the API in project.toml
+  2. LOAD       put the rows in a table called raw
+  3. VALIDATE   run your checks; if any fail, STOP and publish nothing
+  4. TRANSFORM  build the tables listed in project.toml
+  5. PUBLISH    write them to MotherDuck
+
+How to run it (in your Codespace terminal):
+  python pipeline.py            run the whole pipeline
+  python pipeline.py --preview  just show the columns and a few rows from your API
+GitHub Actions runs `python pipeline.py` every day (see .github/workflows/pipeline.yml).
 """
 
 import os
 import sys
 import time
-from datetime import datetime, timezone
+import tomllib
+from datetime import datetime, timezone, timedelta
 
 import duckdb
 import pandas as pd
 import requests
 
-
-# =============================================================================
-### YOUR PROJECT ### 1. Settings
-# =============================================================================
-PROJECT_TABLE = "heat_complaints"    # name of your final table on MotherDuck
-MIN_ROWS = 100                       # fewer rows than this means something went wrong
-DAYS_BACK = 7                        # take a fresh snapshot of the last week each run
-
-# NYC Open Data: 311 Service Requests from 2010 to Present
-NYC_311_URL = "https://data.cityofnewyork.us/resource/erm2-nwe9.json"
+SETTINGS_FILE = os.environ.get("PROJECT_FILE", "project.toml")
 
 
-# =============================================================================
-# Helpers: logging, polite requests with retries, two common paging styles
-# =============================================================================
+# ----------------------------------------------------------------------------
+# Small helpers
+# ----------------------------------------------------------------------------
 def log(step, message):
     """Every line gets a time and a step name, so the run log tells a story."""
     now = datetime.now(timezone.utc).strftime("%H:%M:%S")
@@ -42,145 +39,172 @@ def log(step, message):
 
 
 def get_json(url, params=None, tries=5, pause=3):
-    """GET a URL and return its JSON. Retries up to 5 times if the server is slow or busy."""
+    """Ask the API for data. Waits up to 2 minutes, and retries if the server is slow or busy."""
     for attempt in range(1, tries + 1):
         try:
-            r = requests.get(url, params=params, timeout=(10, 120))  # 10s to connect, 120s to answer
-            if r.status_code == 429 or r.status_code >= 500:   # busy or broken: worth retrying
+            r = requests.get(url, params=params, timeout=(10, 120))
+            if r.status_code == 429 or r.status_code >= 500:     # busy or broken: worth retrying
                 raise requests.HTTPError(f"status {r.status_code}")
-            r.raise_for_status()                                # 4xx: our mistake, don't retry
+            if r.status_code >= 400:                               # our mistake: say so clearly
+                raise ValueError(f"the API said {r.status_code}: {r.text[:300]}")
             return r.json()
         except (requests.ConnectionError, requests.Timeout, requests.HTTPError) as e:
-            if attempt == tries or (isinstance(e, requests.HTTPError) and "status" not in str(e)):
+            if attempt == tries:
                 raise
             log("extract", f"attempt {attempt} failed ({e}); retrying in {pause * attempt}s")
             time.sleep(pause * attempt)
 
 
-def fetch_world_bank(url, params, per_page=250):        # smaller pages answer faster
-    """World Bank style: [page info, records], with page=1, 2, 3..."""
-    rows, page = [], 1
-    while True:
-        meta, records = get_json(url, {**params, "format": "json", "per_page": per_page, "page": page})
-        rows.extend(records or [])
-        log("extract", f"page {meta['page']} of {meta['pages']}: {len(records or [])} rows")
-        if page >= meta["pages"]:
-            return rows, int(meta["total"])
-        page += 1
-        time.sleep(0.5)                   # be polite between pages
+def auto_types(df, keep_as_text=()):
+    """APIs often send numbers and dates as text. Convert columns that are clearly numbers or dates.
+    Codes stay text: anything listed in keep_as_text, or with zip/code/id in its name."""
+    for col in df.columns:
+        if col in keep_as_text or any(w in col.lower() for w in ("zip", "code", "_id", "fips", "bbl", "bin")):
+            continue
+        s = df[col]
+        if not (s.dtype == object or pd.api.types.is_string_dtype(s)):
+            continue
+        nonnull = s.dropna()
+        if nonnull.empty or not all(isinstance(v, str) for v in nonnull):
+            continue
+        nonnull = nonnull.astype(str)
+        as_num = pd.to_numeric(nonnull, errors="coerce")
+        looks_like_code = nonnull.str.match(r"^0\d").any()     # keep ZIP codes like 02139 as text
+        if as_num.notna().all() and not looks_like_code:
+            df[col] = pd.to_numeric(s, errors="coerce")
+            continue
+        if nonnull.str.match(r"^\d{4}-\d{2}-\d{2}").all():
+            df[col] = pd.to_datetime(s, errors="coerce", utc=True).dt.tz_localize(None)
+    return df
 
 
-def fetch_socrata(url, params=None, page_size=1000, max_pages=20):
-    """NYC Open Data / Socrata style: a plain list, paged with $limit and $offset."""
-    rows = []
-    for i in range(max_pages):
-        batch = get_json(url, {**(params or {}), "$limit": page_size, "$offset": i * page_size})
-        rows.extend(batch)
-        log("extract", f"page {i + 1}: {len(batch)} rows")
-        if len(batch) < page_size:        # a short page means we've reached the end
-            break
-        time.sleep(0.5)
-    return rows
-
-
-# =============================================================================
-### YOUR PROJECT ### 2. EXTRACT: fetch from the API and flatten into tables
-# =============================================================================
-def extract():
-    since = (datetime.now(timezone.utc) - pd.Timedelta(days=DAYS_BACK)).strftime("%Y-%m-%dT00:00:00")
-    rows = fetch_socrata(NYC_311_URL, {
-        "$select": "unique_key, created_date, complaint_type, borough, incident_zip",
-        "$where": f"complaint_type = 'HEAT/HOT WATER' AND created_date >= '{since}'",
-        "$order": "unique_key",              # a stable order, so pages don't overlap
-    })
+def flatten(rows):
+    """Turn a list of nested JSON records into a flat table (a.b becomes a_b)."""
     df = pd.json_normalize(rows)
-    for col in ["unique_key", "created_date", "complaint_type", "borough", "incident_zip"]:
-        if col not in df.columns:            # Socrata leaves out fields that are empty
+    df.columns = [c.replace(".", "_") for c in df.columns]
+    return df
+
+
+# ----------------------------------------------------------------------------
+# Step 1: EXTRACT, one function per kind of API
+# ----------------------------------------------------------------------------
+def extract_socrata(src):
+    """NYC Open Data and most city portals: pages of up to 1,000 rows, using $limit and $offset."""
+    params = {"$order": ":id"}                       # a stable order, so pages don't overlap
+    if src.get("columns"):
+        params["$select"] = ", ".join(src["columns"])
+    where = [w for w in [src.get("filter", "")] if w]
+    if src.get("date_column") and src.get("days_back"):
+        since = (datetime.now(timezone.utc) - timedelta(days=int(src["days_back"]))).strftime("%Y-%m-%dT00:00:00")
+        where.append(f"{src['date_column']} >= '{since}'")
+    if where:
+        params["$where"] = " AND ".join(f"({w})" for w in where)
+
+    max_rows = int(src.get("max_rows", 20000))
+    page_size, rows, page = min(1000, max_rows), [], 0
+    while len(rows) < max_rows:
+        batch = get_json(src["url"], {**params, "$limit": page_size, "$offset": page * page_size})
+        rows.extend(batch)
+        page += 1
+        log("extract", f"page {page}: {len(batch)} rows")
+        if len(batch) < page_size:                   # a short page means we've reached the end
+            break
+        time.sleep(0.5)                              # be polite between pages
+    df = flatten(rows[:max_rows])
+    for col in src.get("columns", []):               # Socrata leaves out fields that are empty
+        if col not in df.columns:
             df[col] = None
-    df = df[["unique_key", "created_date", "complaint_type", "borough", "incident_zip"]]
-    df["created_date"] = pd.to_datetime(df["created_date"])
-    df["incident_zip"] = df["incident_zip"].astype("string").str.zfill(5)   # keep leading zeros
-    return {"heat_raw": df}
+    return auto_types(df, src.get("keep_as_text", []))
 
 
-# =============================================================================
-### YOUR PROJECT ### 3. VALIDATE: the checks that define "ready"
-# =============================================================================
-BOROUGHS = "('BRONX', 'BROOKLYN', 'MANHATTAN', 'QUEENS', 'STATEN ISLAND', 'UNSPECIFIED')"
-CHECKS = [
-    ("enough rows arrived",
-     f"SELECT CASE WHEN count(*) >= {MIN_ROWS} THEN 0 ELSE 1 END FROM heat_raw"),
-    ("unique_key present and unique",
-     "SELECT count(*) - count(DISTINCT unique_key) + count(*) FILTER (WHERE unique_key IS NULL) FROM heat_raw"),
-    ("borough is an allowed value",
-     f"SELECT count(*) FROM heat_raw WHERE borough NOT IN {BOROUGHS}"),
-    ("no dates in the future",
-     "SELECT count(*) FROM heat_raw WHERE created_date > now()::TIMESTAMP + INTERVAL 1 DAY"),
-    ("fresh: newest complaint is under 3 days old",
-     "SELECT CASE WHEN max(created_date) >= now()::TIMESTAMP - INTERVAL 3 DAY THEN 0 ELSE 1 END FROM heat_raw"),
-]
+def extract_worldbank(src):
+    """World Bank: any indicator, for countries only (regions and income groups are removed)."""
+    base = "https://api.worldbank.org/v2"
+
+    def pages(url, params):
+        rows, page = [], 1
+        while True:
+            meta, records = get_json(url, {**params, "format": "json", "page": page})
+            rows.extend(records or [])
+            log("extract", f"page {meta['page']} of {meta['pages']}: {len(records or [])} rows")
+            if page >= meta["pages"]:
+                return rows
+            page += 1
+            time.sleep(0.5)
+
+    rows = pages(f"{base}/country/all/indicator/{src['indicator']}",
+                 {"date": src.get("years", "2015:2023"), "per_page": 1000})
+    data = flatten(rows).rename(columns={"countryiso3code": "country_code", "country_value": "country",
+                                         "date": "year", "value": "value"})
+    data = data[["country_code", "country", "year", "value"]]
+    data["year"] = pd.to_numeric(data["year"])
+
+    countries = flatten(pages(f"{base}/country", {"per_page": 500}))
+    countries = countries.rename(columns={"id": "country_code", "region_value": "region",
+                                          "incomeLevel_value": "income_level"})
+    countries = countries[countries["region"].str.strip() != "Aggregates"]
+    before = len(data)
+    data = data.merge(countries[["country_code", "region", "income_level"]], on="country_code")
+    log("extract", f"kept {len(data)} rows for countries; removed {before - len(data)} rows "
+                   f"for regions and income groups (they are not countries)")
+    return data
 
 
-# =============================================================================
-### YOUR PROJECT ### 4. TRANSFORM: build the tables your app will use
-# =============================================================================
-TRANSFORMS = [
-    (PROJECT_TABLE, """
-        SELECT unique_key, created_date, created_date::DATE AS created_day, borough, incident_zip
-        FROM heat_raw
-        WHERE borough <> 'UNSPECIFIED'          -- can't be placed on a map; dropped on purpose
-    """),
-    ("heat_by_borough_day", f"""
-        SELECT borough, created_day, count(*) AS complaints
-        FROM {PROJECT_TABLE}
-        GROUP BY ALL
-    """),
-]
+def extract_json(src):
+    """Any other API that returns a plain list of records in one request."""
+    data = get_json(src["url"], src.get("params", {}))
+    if isinstance(data, dict):
+        key = src.get("records_key")
+        data = data[key] if key else next(v for v in data.values() if isinstance(v, list))
+    log("extract", f"1 request: {len(data)} rows")
+    df = flatten(data)
+    if src.get("columns"):
+        df = df[[c for c in src["columns"] if c in df.columns]]
+    return auto_types(df, src.get("keep_as_text", []))
 
 
-# =============================================================================
-# The pipeline itself. You shouldn't need to change anything below this line.
-# =============================================================================
+EXTRACTORS = {"socrata": extract_socrata, "worldbank": extract_worldbank, "json": extract_json}
+
+
+# ----------------------------------------------------------------------------
+# Steps 2 to 5
+# ----------------------------------------------------------------------------
 class ValidationError(Exception):
     pass
 
 
-def load(con, tables):
-    for name, df in tables.items():
-        con.register("incoming", df)
-        con.sql(f"CREATE OR REPLACE TABLE {name} AS SELECT * FROM incoming")   # replace, never append
-        con.unregister("incoming")
-        log("load", f"{name}: {con.sql(f'SELECT count(*) FROM {name}').fetchone()[0]} rows")
+def load(con, df):
+    con.register("incoming", df)
+    con.sql("CREATE OR REPLACE TABLE raw AS SELECT * FROM incoming")    # replace, never append
+    con.unregister("incoming")
+    log("load", f"raw: {len(df)} rows, {len(df.columns)} columns")
 
 
-def break_on_purpose(con, tables):
-    """Only when BREAK_IT=true: empty the first raw table, to prove the checks stop the run."""
-    name = next(iter(tables))
-    con.sql(f"DELETE FROM {name}")
-    log("load", f"BREAK_IT is on: emptied {name} on purpose")
-
-
-def validate(con, tables):
-    # One built-in check per raw table (an empty download should never be published),
-    # then your checks.
-    builtin = [(f"{t} is not empty", f"SELECT CASE WHEN count(*) > 0 THEN 0 ELSE 1 END FROM {t}")
-               for t in tables]
+def validate(con, checks):
+    builtin = [{"name": "raw is not empty", "sql": "SELECT CASE WHEN count(*) > 0 THEN 0 ELSE 1 END FROM raw"}]
     failures = []
-    for name, sql in builtin + CHECKS:
-        problems = con.sql(sql).fetchone()[0]
+    for check in builtin + checks:
+        try:
+            problems = con.sql(check["sql"]).fetchone()[0]
+        except Exception as e:
+            raise ValidationError(f"the check '{check['name']}' has an SQL error: {e}")
         status = "PASS" if problems == 0 else "FAIL"
-        log("validate", f"{status}  {name}  ({problems} problem rows)")
+        log("validate", f"{status}  {check['name']}  ({problems} problem rows)")
         if problems:
-            failures.append(name)
+            failures.append(check["name"])
     if failures:
         raise ValidationError(f"{len(failures)} check(s) failed: {failures}")
     log("validate", "all checks passed")
 
 
-def transform(con):
-    for name, sql in TRANSFORMS:
-        con.sql(f"CREATE OR REPLACE TABLE {name} AS {sql}")
-        log("transform", f"{name}: {con.sql(f'SELECT count(*) FROM {name}').fetchone()[0]} rows")
+def transform(con, tables):
+    for t in tables:
+        try:
+            con.sql(f"CREATE OR REPLACE TABLE {t['name']} AS {t['sql']}")
+        except Exception as e:
+            raise RuntimeError(f"the table '{t['name']}' has an SQL error: {e}")
+        n = con.sql(f"SELECT count(*) FROM {t['name']}").fetchone()[0]
+        log("transform", f"{t['name']}: {n} rows")
 
 
 def motherduck_token():
@@ -191,7 +215,7 @@ def motherduck_token():
     return token
 
 
-def publish(con):
+def publish(con, tables, project_name):
     if not motherduck_token():
         if os.environ.get("GITHUB_ACTIONS"):
             raise RuntimeError("MOTHERDUCK_TOKEN secret is missing. Add it under "
@@ -200,32 +224,69 @@ def publish(con):
         return
     md = duckdb.connect("md:")
     md.sql("CREATE DATABASE IF NOT EXISTS course")
-    for name, _ in TRANSFORMS:
-        md.register("to_share", con.sql(f"SELECT * FROM {name}").df())
-        md.sql(f"CREATE OR REPLACE TABLE course.main.{name} AS SELECT * FROM to_share")
+    for t in tables:
+        md.register("to_share", con.sql(f"SELECT * FROM {t['name']}").df())
+        md.sql(f"CREATE OR REPLACE TABLE course.main.{t['name']} AS SELECT * FROM to_share")
         md.unregister("to_share")
-        n = md.sql(f"SELECT count(*) FROM course.main.{name}").fetchone()[0]
-        log("publish", f"course.main.{name}: {n} rows on MotherDuck")
+        n = md.sql(f"SELECT count(*) FROM course.main.{t['name']}").fetchone()[0]
+        log("publish", f"course.main.{t['name']}: {n} rows on MotherDuck")
     md.sql(f"""CREATE OR REPLACE TABLE course.main.pipeline_runs AS
-               SELECT '{PROJECT_TABLE}' AS project_table, now() AS last_success""")
+               SELECT '{project_name}' AS project, now() AS last_success""")
     md.close()
 
 
-def main():
-    started = time.time()
-    log("start", f"pipeline for '{PROJECT_TABLE}'")
-    con = duckdb.connect()            # a fresh in-memory database every run
+def read_settings():
     try:
-        tables = extract()
-        load(con, tables)
+        with open(SETTINGS_FILE, "rb") as f:
+            s = tomllib.load(f)
+    except FileNotFoundError:
+        sys.exit(f"Can't find {SETTINGS_FILE}. Run this from the top folder of your repo.")
+    except tomllib.TOMLDecodeError as e:
+        sys.exit(f"{SETTINGS_FILE} has a typo: {e}\n"
+                 "Check quotes and brackets on that line. Text goes in \"double quotes\".")
+    kind = s.get("source", {}).get("type")
+    if kind not in EXTRACTORS:
+        sys.exit(f"In {SETTINGS_FILE}, [source] type must be one of {list(EXTRACTORS)}, not {kind!r}.")
+    return s
+
+
+def preview(settings):
+    src = settings["source"]
+    log("preview", f"asking {src.get('url', src.get('indicator'))} for a sample")
+    if src["type"] == "socrata":
+        df = EXTRACTORS["socrata"]({**src, "max_rows": 5})
+    else:
+        df = EXTRACTORS[src["type"]](src).head(5)
+    print("\nColumns (use these names in project.toml):")
+    for col, dtype in df.dtypes.items():
+        print(f"  {col:<30} {dtype}")
+    print("\nFirst rows:")
+    with pd.option_context("display.max_columns", 12, "display.width", 160):
+        print(df.head(5).to_string(index=False))
+
+
+def main():
+    settings = read_settings()
+    if "--preview" in sys.argv:
+        preview(settings)
+        return
+
+    project = settings.get("project", {}).get("name", "my_project")
+    started = time.time()
+    log("start", f"pipeline for '{project}'")
+    con = duckdb.connect()                # a fresh in-memory database every run
+    try:
+        df = EXTRACTORS[settings["source"]["type"]](settings["source"])
+        load(con, df)
         if os.environ.get("BREAK_IT", "").lower() == "true":
-            break_on_purpose(con, tables)
-        validate(con, tables)
-        transform(con)
-        publish(con)
+            con.sql("DELETE FROM raw")
+            log("load", "BREAK_IT is on: emptied raw on purpose, to test the checks")
+        validate(con, settings.get("checks", []))
+        transform(con, settings.get("tables", []))
+        publish(con, settings.get("tables", []), project)
     except ValidationError as e:
         log("STOPPED", f"{e}. Nothing was published; yesterday's tables are untouched.")
-        sys.exit(1)                   # a non-zero exit turns the GitHub Actions run red
+        sys.exit(1)                       # a non-zero exit turns the GitHub Actions run red
     except Exception as e:
         log("STOPPED", f"{type(e).__name__}: {e}")
         sys.exit(1)

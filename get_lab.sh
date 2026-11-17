@@ -9,7 +9,7 @@ BASE="${COURSE_BASE:-https://raw.githubusercontent.com/esbee1/data-infra-ai-cour
 case "$LAB" in
   2) FILES="notebooks/lab2_joins.ipynb data/species_lookup.csv labs/lab2.md" ;;
   3) FILES="notebooks/lab3_live_data.ipynb labs/lab3.md" ;;
-  4) FILES="pipeline.py templates/pipeline.yml>.github/workflows/pipeline.yml examples/pipeline_worldbank.py docs/data_dictionary.md labs/lab4.md notebooks/lab3_live_data.ipynb" ;;
+  4) FILES="pipeline.py project.toml templates/pipeline.yml>.github/workflows/pipeline.yml examples/project_worldbank.toml docs/data_dictionary.md labs/lab4.md notebooks/lab3_live_data.ipynb" ;;
   *) echo "Usage: ... | bash -s <lab number>   (available: 2, 3, 4)"; exit 1 ;;
 esac
 
