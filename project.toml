@@ -75,9 +75,14 @@ sql  = "SELECT CASE WHEN max(created_date) >= now()::TIMESTAMP - INTERVAL 3 DAY 
 
 
 # -----------------------------------------------------------------------------
-# 3. TABLES: what to build and publish to MotherDuck (at least one)
-#    Each is a SELECT on raw (or on a table listed above it).
+# 3. TABLES: what to build and publish to MotherDuck (at least three)
+#    Each is a SELECT on raw, or on a table listed above it.
+#    Start with one clean table, then build analysis tables from it:
+#    a trend over time, a summary of key metrics, and a ranking.
+#    Next week's AI app answers questions from these tables.
 # -----------------------------------------------------------------------------
+
+# (a) The clean table: one row per complaint
 [[tables]]
 name = "heat_complaints"
 sql  = """
@@ -86,10 +91,37 @@ FROM raw
 WHERE borough <> 'UNSPECIFIED'      -- can't be placed in a borough: dropped on purpose
 """
 
+# (b) A trend: complaints per borough per day
 [[tables]]
 name = "heat_by_borough_day"
 sql  = """
 SELECT borough, created_day, count(*) AS complaints
 FROM heat_complaints
 GROUP BY borough, created_day
+"""
+
+# (c) Key metrics: one row per borough
+[[tables]]
+name = "heat_borough_summary"
+sql  = """
+SELECT borough,
+       count(*)                                             AS total_complaints,
+       round(count(*) / count(DISTINCT created_day), 1)     AS avg_per_day,
+       round(100.0 * count(*) / sum(count(*)) OVER (), 1)   AS pct_of_city,
+       count(DISTINCT incident_zip)                         AS zip_codes_affected
+FROM heat_complaints
+GROUP BY borough
+ORDER BY total_complaints DESC
+"""
+
+# (d) A ranking: the 20 ZIP codes with the most complaints
+[[tables]]
+name = "heat_top_zips"
+sql  = """
+SELECT incident_zip, borough, count(*) AS complaints
+FROM heat_complaints
+WHERE incident_zip IS NOT NULL
+GROUP BY incident_zip, borough
+ORDER BY complaints DESC
+LIMIT 20
 """
