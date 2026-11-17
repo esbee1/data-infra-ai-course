@@ -6,8 +6,9 @@ Run it by hand in your Codespace terminal:
     python pipeline.py
 GitHub Actions runs the same file every day (see .github/workflows/pipeline.yml).
 
-It ships with a working example (World Bank urban population). To make it yours,
-edit only the four blocks marked  ### YOUR PROJECT ###  below.
+It ships with a working example: NYC 311 heat and hot water complaints, from NYC Open Data.
+To make it yours, edit only the four blocks marked  ### YOUR PROJECT ###  below.
+A second finished example, using the World Bank API, is in examples/pipeline_worldbank.py.
 """
 
 import os
@@ -23,13 +24,12 @@ import requests
 # =============================================================================
 ### YOUR PROJECT ### 1. Settings
 # =============================================================================
-PROJECT_TABLE = "urban_population"   # name of your final table on MotherDuck
-MIN_ROWS = 500                       # fewer rows than this means something went wrong
+PROJECT_TABLE = "heat_complaints"    # name of your final table on MotherDuck
+MIN_ROWS = 100                       # fewer rows than this means something went wrong
+DAYS_BACK = 7                        # take a fresh snapshot of the last week each run
 
-# World Bank example
-WB_BASE = "https://api.worldbank.org/v2"
-WB_INDICATOR = "SP.URB.TOTL.IN.ZS"   # urban population, % of total
-WB_YEARS = "2015:2023"
+# NYC Open Data: 311 Service Requests from 2010 to Present
+NYC_311_URL = "https://data.cityofnewyork.us/resource/erm2-nwe9.json"
 
 
 # =============================================================================
@@ -85,88 +85,55 @@ def fetch_socrata(url, params=None, page_size=1000, max_pages=20):
 
 # =============================================================================
 ### YOUR PROJECT ### 2. EXTRACT: fetch from the API and flatten into tables
-# Return a dict of {table_name: DataFrame}. These become your raw tables.
 # =============================================================================
 def extract():
-    # The indicator endpoint is slow per request, so ask for fewer, bigger pages
-    rows, expected = fetch_world_bank(f"{WB_BASE}/country/all/indicator/{WB_INDICATOR}",
-                                      {"date": WB_YEARS}, per_page=1000)
-    if len(rows) != expected:
-        log("extract", f"WARNING: got {len(rows)} rows, API says {expected}")
-
-    urban = pd.json_normalize(rows).rename(columns={
-        "countryiso3code": "country_code", "country.value": "country",
-        "date": "year", "value": "urban_pct",
-    })[["country_code", "country", "year", "urban_pct"]]
-    urban["year"] = urban["year"].astype(int)
-    # Decision: a few World Bank rows have no 3-letter country code (they are groupings,
-    # not countries). Our key is country_code + year, so rows without a code can't be used.
-    no_code = (urban["country_code"].isna()) | (urban["country_code"].str.strip() == "")
-    if no_code.any():
-        names = sorted(urban.loc[no_code, "country"].unique())
-        log("extract", f"dropping {no_code.sum()} rows with no country code: {names}")
-    urban = urban[~no_code]
-
-    country_rows, _ = fetch_world_bank(f"{WB_BASE}/country", {})
-    countries = pd.json_normalize(country_rows).rename(columns={
-        "id": "country_code", "region.value": "region", "incomeLevel.value": "income_level",
-    })[["country_code", "region", "income_level"]]
-    countries["region"] = countries["region"].str.strip()
-
-    return {"urban_raw": urban, "countries": countries}
-
-    # --- Socrata (NYC Open Data) version: replace everything above with something like ---
-    # rows = fetch_socrata("https://data.cityofnewyork.us/resource/xxxx-xxxx.json",
-    #                      {"$where": "created_date >= '2026-01-01'"})
-    # df = pd.json_normalize(rows)
-    # df = df.rename(columns={...})[[...]]          # keep and rename what you need
-    # df["created_date"] = pd.to_datetime(df["created_date"])
-    # return {"my_raw": df}
+    since = (datetime.now(timezone.utc) - pd.Timedelta(days=DAYS_BACK)).strftime("%Y-%m-%dT00:00:00")
+    rows = fetch_socrata(NYC_311_URL, {
+        "$select": "unique_key, created_date, complaint_type, borough, incident_zip",
+        "$where": f"complaint_type = 'HEAT/HOT WATER' AND created_date >= '{since}'",
+        "$order": "unique_key",              # a stable order, so pages don't overlap
+    })
+    df = pd.json_normalize(rows)
+    for col in ["unique_key", "created_date", "complaint_type", "borough", "incident_zip"]:
+        if col not in df.columns:            # Socrata leaves out fields that are empty
+            df[col] = None
+    df = df[["unique_key", "created_date", "complaint_type", "borough", "incident_zip"]]
+    df["created_date"] = pd.to_datetime(df["created_date"])
+    df["incident_zip"] = df["incident_zip"].astype("string").str.zfill(5)   # keep leading zeros
+    return {"heat_raw": df}
 
 
 # =============================================================================
 ### YOUR PROJECT ### 3. VALIDATE: the checks that define "ready"
-# Each check is (name, SQL that returns the number of PROBLEM rows). 0 = pass.
-# They run against the raw tables, before anything is published.
 # =============================================================================
+BOROUGHS = "('BRONX', 'BROOKLYN', 'MANHATTAN', 'QUEENS', 'STATEN ISLAND', 'UNSPECIFIED')"
 CHECKS = [
     ("enough rows arrived",
-     f"SELECT CASE WHEN count(*) >= {MIN_ROWS} THEN 0 ELSE 1 END FROM urban_raw"),
-    ("keys present and unique (country_code, year)",
-     """SELECT count(*) FROM (
-            SELECT country_code, year FROM urban_raw
-            GROUP BY ALL HAVING count(*) > 1 OR country_code IS NULL OR country_code = ''
-        )"""),
-    ("urban_pct between 0 and 100",
-     "SELECT count(*) FROM urban_raw WHERE urban_pct NOT BETWEEN 0 AND 100"),
-    ("under 25% of values missing",
-     "SELECT CASE WHEN avg((urban_pct IS NULL)::INT) < 0.25 THEN 0 ELSE 1 END FROM urban_raw"),
-    ("has data from 2022 or later",
-     "SELECT CASE WHEN max(year) FILTER (WHERE urban_pct IS NOT NULL) >= 2022 THEN 0 ELSE 1 END FROM urban_raw"),
+     f"SELECT CASE WHEN count(*) >= {MIN_ROWS} THEN 0 ELSE 1 END FROM heat_raw"),
+    ("unique_key present and unique",
+     "SELECT count(*) - count(DISTINCT unique_key) + count(*) FILTER (WHERE unique_key IS NULL) FROM heat_raw"),
+    ("borough is an allowed value",
+     f"SELECT count(*) FROM heat_raw WHERE borough NOT IN {BOROUGHS}"),
+    ("no dates in the future",
+     "SELECT count(*) FROM heat_raw WHERE created_date > now()::TIMESTAMP + INTERVAL 1 DAY"),
+    ("fresh: newest complaint is under 3 days old",
+     "SELECT CASE WHEN max(created_date) >= now()::TIMESTAMP - INTERVAL 3 DAY THEN 0 ELSE 1 END FROM heat_raw"),
 ]
 
 
 # =============================================================================
 ### YOUR PROJECT ### 4. TRANSFORM: build the tables your app will use
-# A list of (table_name, SQL). Each becomes a table that gets published.
 # =============================================================================
 TRANSFORMS = [
-    # Countries only: regions like "World" and "High income" are removed on purpose
     (PROJECT_TABLE, """
-        SELECT u.country_code, u.country, c.region, c.income_level, u.year, u.urban_pct
-        FROM urban_raw u
-        JOIN countries c USING (country_code)
-        WHERE c.region <> 'Aggregates'
+        SELECT unique_key, created_date, created_date::DATE AS created_day, borough, incident_zip
+        FROM heat_raw
+        WHERE borough <> 'UNSPECIFIED'          -- can't be placed on a map; dropped on purpose
     """),
-    # A summary table: change in urban share, first year to latest year
-    ("urban_change", f"""
-        SELECT country, region,
-               arg_min(urban_pct, year) AS pct_first,
-               arg_max(urban_pct, year) AS pct_latest,
-               round(pct_latest - pct_first, 1) AS change
+    ("heat_by_borough_day", f"""
+        SELECT borough, created_day, count(*) AS complaints
         FROM {PROJECT_TABLE}
-        WHERE urban_pct IS NOT NULL
-        GROUP BY country, region
+        GROUP BY ALL
     """),
 ]
 
