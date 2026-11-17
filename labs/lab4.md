@@ -43,9 +43,10 @@ If a token ever leaks, delete it in MotherDuck right away and make a new one (th
 
 **Checklist before you submit**
 
-- [ ] `project.toml` points to **your** API, with at least five checks of your own (each with a why) and at least one table
+- [ ] `project.toml` points to **your** API, with at least five checks of your own (each with a why) and at least three tables: one clean table and at least two analysis tables (trend, key metrics or ranking)
+- [ ] `docs/findings.md`: three findings, each backed by one of your tables
 - [ ] A green run and a red run on the Actions tab, both linked above
-- [ ] `docs/data_dictionary.md` filled in for your final table
+- [ ] `docs/data_dictionary.md` filled in for every table you publish
 - [ ] This file answered
 - [ ] No token anywhere in your files (tokens start with `eyJ`: search your repo with Cmd+Shift+F)
 - [ ] Committed and pushed; repo URL submitted on CourseWorks
