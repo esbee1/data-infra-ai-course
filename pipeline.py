@@ -41,11 +41,11 @@ def log(step, message):
     print(f"{now}  [{step:<9}] {message}", flush=True)
 
 
-def get_json(url, params=None, tries=3, pause=2):
-    """GET a URL and return its JSON. Retries a few times if the server hiccups."""
+def get_json(url, params=None, tries=5, pause=3):
+    """GET a URL and return its JSON. Retries up to 5 times if the server is slow or busy."""
     for attempt in range(1, tries + 1):
         try:
-            r = requests.get(url, params=params, timeout=30)
+            r = requests.get(url, params=params, timeout=(10, 90))   # 10s to connect, 90s to answer
             if r.status_code == 429 or r.status_code >= 500:   # busy or broken: worth retrying
                 raise requests.HTTPError(f"status {r.status_code}")
             r.raise_for_status()                                # 4xx: our mistake, don't retry
@@ -57,7 +57,7 @@ def get_json(url, params=None, tries=3, pause=2):
             time.sleep(pause * attempt)
 
 
-def fetch_world_bank(url, params, per_page=500):
+def fetch_world_bank(url, params, per_page=250):        # smaller pages answer faster
     """World Bank style: [page info, records], with page=1, 2, 3..."""
     rows, page = [], 1
     while True:
