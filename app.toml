@@ -1,0 +1,39 @@
+# =============================================================================
+#  app.toml · YOUR APP SETTINGS
+#  This is the only app file you edit. app.py reads it and does the rest.
+#  Same rules as project.toml: text in "quotes", lists in [brackets], # for notes.
+#
+#  The app also reads two files you already have:
+#   - project.toml               to know which tables your pipeline publishes
+#   - docs/data_dictionary.md    to know what every column means
+#  A clearer data dictionary means better answers. That's the whole lesson.
+# =============================================================================
+
+# What people see at the top of your app
+title       = "NYC heat complaints, this week"
+description = "Ask about heat and hot water complaints made to NYC 311 in the last 7 days."
+
+# Three to five questions your app answers well. They show up as buttons.
+# Tip: start with the findings from docs/findings.md.
+examples = [
+  "Which borough had the most heat complaints this week?",
+  "What share of complaints came from the Bronx?",
+  "Which five ZIP codes were hardest hit?",
+  "How many complaints came in each day, citywide?",
+]
+
+# The AI model. Free-tier Gemini models as of November 2026 (Google changes limits often):
+#   "gemini-3.5-flash-lite"  roughly 15 questions a minute, a few hundred a day (default)
+#   "gemini-3.8-flash"       smarter, but only a handful a minute and about 20 a day
+# If a model stops working, the app tries the next one in this list.
+models = ["gemini-3.5-flash-lite", "gemini-3.1-flash-lite", "gemini-3.8-flash"]
+
+# Guardrail: the most rows any answer can return
+max_rows = 200
+
+# Optional: extra instructions for the AI, in plain English.
+# Use this to fix answers that came out wrong in your evaluation.
+# Example: "Borough names are stored in capitals, like 'BRONX'."
+extra_instructions = """
+Borough names are stored in capital letters, like 'BRONX' and 'STATEN ISLAND'.
+"""

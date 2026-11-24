@@ -10,7 +10,9 @@ case "$LAB" in
   2) FILES="notebooks/lab2_joins.ipynb data/species_lookup.csv labs/lab2.md" ;;
   3) FILES="notebooks/lab3_live_data.ipynb labs/lab3.md" ;;
   4) FILES="pipeline.py project.toml templates/pipeline.yml>.github/workflows/pipeline.yml examples/project_worldbank.toml docs/data_dictionary.md docs/findings.md labs/lab4.md notebooks/lab3_live_data.ipynb" ;;
-  *) echo "Usage: ... | bash -s <lab number>   (available: 2, 3, 4)"; exit 1 ;;
+  5) FILES="app.py app.toml docs/app_evaluation.md docs/data_dictionary_example.md labs/lab5.md" ;;
+  final) FILES="docs/architecture.md labs/final_project.md" ;;
+  *) echo "Usage: ... | bash -s <lab number>   (available: 2, 3, 4, 5, final)"; exit 1 ;;
 esac
 
 if [ ! -d data ] || [ ! -d notebooks ]; then
