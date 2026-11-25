@@ -2,7 +2,7 @@
 app.py · THE APP ENGINE (you don't need to edit this file)
 
 Turns a plain-English question into SQL, runs it on your MotherDuck tables,
-and shows the answer, the SQL and the rows behind it.
+and shows the answer, a chart when the rows suit one, and the SQL and rows behind it.
 
     question ──► Gemini writes SQL ──► guardrails check it ──► MotherDuck runs it
                  (reads your data dictionary)                       │
@@ -16,7 +16,9 @@ import os
 import re
 import tomllib
 
+import altair as alt
 import duckdb
+import pandas as pd
 import requests
 import streamlit as st
 
@@ -97,7 +99,7 @@ def last_refresh():
         return None
 
 
-# ----------------------------------------------------------------------------
+# -----------------------------------------------------------------------------
 # Gemini: one request in, one answer out
 # -----------------------------------------------------------------------------
 class AIError(Exception):
@@ -237,6 +239,42 @@ def answer(question):
             "text": explain(question, plan["sql"], df), "fixed": attempt == 2}
 
 
+
+# -----------------------------------------------------------------------------
+# Charts: drawn from the same rows, so they stay traceable to the SQL
+# -----------------------------------------------------------------------------
+def chart_for(df):
+    """A line chart for dates, a bar chart for categories, or None."""
+    if df is None or len(df) < 2:
+        return None
+    df = df.copy()
+    nums = [c for c in df.columns if pd.api.types.is_numeric_dtype(df[c]) and not pd.api.types.is_bool_dtype(df[c])]
+    dates = []
+    for c in df.columns:
+        if c in nums:
+            continue
+        if pd.api.types.is_datetime64_any_dtype(df[c]):
+            dates.append(c)
+        elif df[c].dtype == object and len(df[c].dropna()) and all(hasattr(v, "year") and hasattr(v, "month") for v in df[c].dropna().head(20)):
+            df[c] = pd.to_datetime(df[c]); dates.append(c)
+    cats = [c for c in df.columns if c not in nums and c not in dates]
+    if not nums:
+        return None
+    y = nums[0]
+    if dates:
+        x = dates[0]
+        enc = dict(x=alt.X(x, title=x), y=alt.Y(y, title=y), tooltip=list(df.columns))
+        series = [c for c in cats if 1 < df[c].nunique() <= 8]
+        if series:
+            enc["color"] = alt.Color(series[0], title=series[0])
+        return alt.Chart(df).mark_line(point=True).encode(**enc).properties(width="container", height=280)
+    if cats and len(df) <= 30:
+        x = cats[0]
+        return (alt.Chart(df).mark_bar().encode(
+                    x=alt.X(x, sort=None, title=x), y=alt.Y(y, title=y), tooltip=list(df.columns))
+                .properties(width="container", height=280))
+    return None
+
 # -----------------------------------------------------------------------------
 # The page
 # -----------------------------------------------------------------------------
@@ -303,6 +341,10 @@ for item in st.session_state.history:
     st.subheader(item["question"])
     if item["status"] == "ok":
         st.success(item["text"])
+        pic = chart_for(item.get("rows"))
+        if pic is not None:
+            st.altair_chart(pic)
+            st.caption("Chart drawn from the rows below, not by the AI.")
     elif item["status"] == "cannot":
         st.warning("This data can't answer that. " + item["text"])
     else:
